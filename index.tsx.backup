@@ -1,0 +1,578 @@
+import './index.css';
+import React, { useState, useRef, useEffect } from 'react';
+import ReactDOM from 'react-dom/client';
+import { Upload, FileVideo, AlertCircle, CheckCircle2, FileText, Download, Play, BarChart3, ShieldCheck, X, File as FileIcon, RotateCcw, Link as LinkIcon, Plus } from 'lucide-react';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+import { analyzeVideo } from './services/geminiService';
+import { AnalysisResult, AppState } from './types';
+
+// --- SERVICES & UTILS ---
+
+// PDF Generator
+const generatePDFReport = (data: AnalysisResult, referenceFilenames: string[], referenceUrls: string[]) => {
+  const doc = new jsPDF();
+
+  doc.setFontSize(20);
+  doc.setTextColor(41, 128, 185);
+  doc.text("Refinery Instrumentation Inspection Report", 14, 22);
+
+  doc.setFontSize(10);
+  doc.setTextColor(100);
+  const date = new Date().toLocaleDateString();
+  const time = new Date().toLocaleTimeString();
+  doc.text(`Generated on: ${date} at ${time}`, 14, 30);
+  doc.text(`AI Engine: Gemini 2.5 Flash`, 14, 35);
+
+  let yPos = 42;
+
+  if (referenceFilenames.length > 0) {
+    doc.text(`Reference PDFs:`, 14, yPos);
+    doc.setFontSize(9);
+    doc.setTextColor(60);
+    referenceFilenames.forEach((name) => {
+      yPos += 5;
+      doc.text(`- ${name}`, 20, yPos);
+    });
+    yPos += 7;
+  } else {
+    doc.text(`Reference PDFs: None provided`, 14, yPos);
+    yPos += 7;
+  }
+
+  if (referenceUrls.length > 0) {
+    doc.setFontSize(10);
+    doc.setTextColor(100);
+    doc.text(`Reference URLs:`, 14, yPos);
+    doc.setFontSize(9);
+    doc.setTextColor(60);
+    referenceUrls.forEach((url) => {
+      yPos += 5;
+      doc.text(`- ${url}`, 20, yPos);
+    });
+    yPos += 10;
+  }
+
+  doc.setFontSize(14);
+  doc.setTextColor(0);
+  doc.text("Executive Summary", 14, yPos);
+
+  doc.setFontSize(10);
+  doc.setTextColor(60);
+  const splitSummary = doc.splitTextToSize(data.summary, 180);
+  doc.text(splitSummary, 14, yPos + 7);
+
+  const tableData = data.faults.map(fault => [
+    fault.timestamp,
+    fault.tagNumber,
+    fault.component,
+    fault.faultType,
+    fault.severity,
+    fault.standardGap,
+    fault.recommendation
+  ]);
+
+  const summaryHeight = splitSummary.length * 4;
+  const tableStartY = yPos + 7 + summaryHeight + 10;
+
+  autoTable(doc, {
+    startY: tableStartY > 250 ? 20 : tableStartY,
+    head: [['Time', 'Tag No.', 'Component', 'Fault', 'Severity', 'Gap / Violation', 'Action']],
+    body: tableData,
+    headStyles: { fillColor: [41, 128, 185], textColor: 255 },
+    columnStyles: {
+      0: { cellWidth: 12 },  // Time
+      1: { cellWidth: 22 },  // Tag No.
+      2: { cellWidth: 20 },  // Component
+      3: { cellWidth: 18 },  // Fault
+      4: { cellWidth: 15 },  // Severity
+      5: { cellWidth: 45 },  // Gap
+      6: { cellWidth: 40 },  // Action
+    },
+    styles: { fontSize: 8, overflow: 'linebreak' },
+    margin: { top: 10 }
+  });
+
+  const pageCount = doc.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    doc.setFontSize(8);
+    doc.setTextColor(150);
+    doc.text(`Page ${i} of ${pageCount}`, 190, 290, { align: 'right' });
+    doc.text("RefineryEye AI - Confidential Maintenance Record", 14, 290);
+  }
+
+  doc.save(`Refinery_Inspection_Report_${Date.now()}.pdf`);
+};
+
+// --- COMPONENTS ---
+
+interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  variant?: 'primary' | 'secondary' | 'danger';
+  isLoading?: boolean;
+}
+
+const Button: React.FC<ButtonProps> = ({
+  children,
+  variant = 'primary',
+  isLoading,
+  className = '',
+  disabled,
+  ...props
+}) => {
+  const baseStyles = "px-6 py-3 rounded-lg font-semibold transition-all duration-200 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transform active:scale-95 shadow-lg";
+
+  const variants = {
+    primary: "bg-gradient-to-br from-orange-500 to-orange-600 text-white hover:from-orange-600 hover:to-orange-700 shadow-orange-500/50 hover:shadow-orange-600/50 border-b-4 border-orange-700 active:border-b-2",
+    secondary: "bg-gradient-to-br from-blue-800 to-blue-900 text-white hover:from-blue-900 hover:to-blue-950 shadow-blue-800/50 hover:shadow-blue-900/50 border-b-4 border-blue-950 active:border-b-2",
+    danger: "bg-gradient-to-br from-red-600 to-red-700 text-white hover:from-red-700 hover:to-red-800 shadow-red-600/50 border-b-4 border-red-800 active:border-b-2"
+  };
+
+  return (
+    <button
+      className={`${baseStyles} ${variants[variant]} ${className}`}
+      disabled={disabled || isLoading}
+      {...props}
+    >
+      {isLoading ? (
+        <>
+          <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+          Processing...
+        </>
+      ) : children}
+    </button>
+  );
+};
+
+// --- MAIN APP COMPONENT ---
+
+const App: React.FC = () => {
+  const [appState, setAppState] = useState<AppState>(AppState.IDLE);
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+
+  const [referenceFiles, setReferenceFiles] = useState<File[]>([]);
+  const [referenceUrls, setReferenceUrls] = useState<string[]>([]);
+  const [urlInput, setUrlInput] = useState<string>("");
+
+  const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  // Safely access process.env injected by server.js (prod) or Vite define (dev)
+  const apiKey = (window as any).process?.env?.API_KEY || process.env.API_KEY || '';
+
+  const handleVideoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      if (file.size > 50 * 1024 * 1024) {
+        setErrorMsg("Video file is too large. Please upload a video smaller than 50MB for this demo.");
+        return;
+      }
+      setVideoFile(file);
+      setVideoUrl(URL.createObjectURL(file));
+      setAppState(AppState.READY_TO_ANALYZE);
+      setErrorMsg(null);
+    }
+  };
+
+  const handleReferenceFilesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      const newFiles = Array.from(e.target.files);
+      const validFiles = newFiles.filter(f => f.type === 'application/pdf');
+
+      if (validFiles.length !== newFiles.length) {
+        setErrorMsg("Some files were skipped. Only PDF documents are allowed for reference standards.");
+      } else {
+        setErrorMsg(null);
+      }
+
+      setReferenceFiles(prev => [...prev, ...validFiles]);
+    }
+  };
+
+  const removeReferenceFile = (index: number) => {
+    setReferenceFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleAddUrl = () => {
+    if (!urlInput.trim()) return;
+    try {
+      new URL(urlInput);
+      if (!referenceUrls.includes(urlInput)) {
+        setReferenceUrls(prev => [...prev, urlInput]);
+        setUrlInput("");
+        setErrorMsg(null);
+      } else {
+        setErrorMsg("This URL has already been added.");
+      }
+    } catch (e) {
+      setErrorMsg("Please enter a valid URL including http:// or https://");
+    }
+  };
+
+  const removeReferenceUrl = (index: number) => {
+    setReferenceUrls(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleAnalyze = async () => {
+    if (!videoFile || !apiKey) {
+      if (!apiKey) setErrorMsg("API Key is missing from environment.");
+      return;
+    }
+
+    if (referenceFiles.length === 0 && referenceUrls.length === 0) {
+      const confirmAnalyze = window.confirm("No reference documents or URLs provided. AI will use general best practices. Continue?");
+      if (!confirmAnalyze) return;
+    }
+
+    setAppState(AppState.ANALYZING);
+    try {
+      const result = await analyzeVideo(videoFile, referenceFiles, referenceUrls, apiKey);
+      setAnalysisResult(result);
+      setAppState(AppState.COMPLETED);
+    } catch (error) {
+      console.error(error);
+      setErrorMsg("Analysis failed. Please try again. Ensure your API key is valid and the files are supported.");
+      setAppState(AppState.ERROR);
+    }
+  };
+
+  const handleReset = () => {
+    setAppState(AppState.IDLE);
+    setVideoFile(null);
+    setVideoUrl(null);
+    setAnalysisResult(null);
+    setErrorMsg(null);
+  };
+
+  const handleDownloadPDF = () => {
+    if (analysisResult) {
+      const filenames = referenceFiles.map(f => f.name);
+      generatePDFReport(analysisResult, filenames, referenceUrls);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 text-slate-900 flex flex-col">
+      <header className="bg-gradient-to-r from-blue-900 via-blue-800 to-orange-600 border-b-4 border-orange-500 sticky top-0 z-50 shadow-xl">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="bg-gradient-to-br from-orange-400 to-orange-600 p-3 rounded-xl shadow-lg border-2 border-orange-300">
+              <ShieldCheck className="w-7 h-7 text-white" />
+            </div>
+            <h1 className="text-2xl font-bold text-white drop-shadow-lg">
+              RefineryEye AI
+            </h1>
+          </div>
+          <div className="flex items-center gap-4">
+            <span className="text-sm text-orange-100 hidden sm:inline-block font-medium">Instrumentation Inspection Module</span>
+            <div className="h-10 w-10 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 border-3 border-white shadow-lg flex items-center justify-center">
+              <span className="text-sm font-bold text-white">AI</span>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main className="flex-grow p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full">
+        {errorMsg && (
+          <div className="mb-6 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg flex items-center gap-3">
+            <AlertCircle className="w-5 h-5 flex-shrink-0" />
+            <p>{errorMsg}</p>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8">
+          <div className="lg:col-span-5 space-y-6">
+            <div className="bg-white rounded-xl shadow-lg border-2 border-orange-200 overflow-hidden">
+              <div className="p-4 border-b-2 border-orange-200 bg-gradient-to-r from-orange-50 to-blue-50 flex justify-between items-center">
+                <h2 className="font-bold text-blue-900 flex items-center gap-2">
+                  <FileVideo className="w-5 h-5 text-orange-600" />
+                  Inspection Footage
+                </h2>
+                {appState === AppState.COMPLETED && (
+                  <button onClick={handleReset} className="text-xs text-orange-600 hover:text-orange-700 font-semibold hover:underline">New Inspection</button>
+                )}
+              </div>
+
+              <div className="p-6">
+                {!videoFile ? (
+                  <div className="border-2 border-dashed border-slate-300 rounded-xl p-8 flex flex-col items-center justify-center text-center hover:bg-slate-50 transition-colors relative">
+                    <input
+                      type="file"
+                      accept="video/mp4,video/webm,video/quicktime"
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                      onChange={handleVideoChange}
+                    />
+                    <div className="w-16 h-16 bg-gradient-to-br from-orange-100 to-orange-200 rounded-full flex items-center justify-center mb-4 shadow-md">
+                      <Upload className="w-8 h-8 text-orange-600" />
+                    </div>
+                    <p className="text-sm font-medium text-slate-900">Click or Drag to Upload Video</p>
+                    <p className="text-xs text-slate-500 mt-1">MP4, WebM (Max 50MB)</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="relative rounded-lg overflow-hidden bg-black aspect-video shadow-md">
+                      <video
+                        ref={videoRef}
+                        src={videoUrl || ""}
+                        controls
+                        className="w-full h-full object-contain"
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between p-3 bg-green-50 rounded-lg border border-green-100">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle2 className="w-5 h-5 text-green-600" />
+                        <span className="text-sm font-medium text-green-800">Video uploaded</span>
+                      </div>
+                      <span className="text-xs text-green-700 bg-green-200 px-2 py-1 rounded">Ready</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="bg-white rounded-xl shadow-lg border-2 border-blue-200 overflow-hidden">
+              <div className="p-4 border-b-2 border-blue-200 bg-gradient-to-r from-blue-50 to-orange-50">
+                <h2 className="font-bold text-blue-900 flex items-center gap-2">
+                  <FileText className="w-5 h-5 text-blue-700" />
+                  Reference Documents & Links
+                </h2>
+              </div>
+              <div className="p-4 space-y-4">
+                <div className="flex flex-col gap-2">
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">PDF Standards</p>
+                  <label className="flex items-center justify-center w-full px-4 py-3 bg-white border-2 border-slate-300 border-dashed rounded-lg cursor-pointer hover:bg-slate-50 transition-colors">
+                    <div className="flex items-center space-x-2">
+                      <Upload className="w-5 h-5 text-slate-400" />
+                      <span className="text-sm font-medium text-slate-600">Add PDF Document</span>
+                    </div>
+                    <input
+                      type="file"
+                      accept="application/pdf"
+                      multiple
+                      className="hidden"
+                      onChange={handleReferenceFilesChange}
+                    />
+                  </label>
+                  {referenceFiles.length > 0 && (
+                    <div className="space-y-2 max-h-32 overflow-y-auto mt-1">
+                      {referenceFiles.map((file, index) => (
+                        <div key={index} className="flex items-center justify-between p-2 bg-slate-50 rounded border border-slate-200 text-sm">
+                          <div className="flex items-center gap-2 overflow-hidden">
+                            <FileIcon className="w-4 h-4 text-red-500 flex-shrink-0" />
+                            <span className="truncate text-slate-700 font-medium">{file.name}</span>
+                          </div>
+                          <button onClick={() => removeReferenceFile(index)} className="text-slate-400 hover:text-red-500 p-1">
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="border-t border-slate-100 my-2"></div>
+
+                <div className="flex flex-col gap-2">
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Web Page Links</p>
+                  <div className="flex gap-2">
+                    <div className="relative flex-grow">
+                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                        <LinkIcon className="h-4 w-4 text-slate-400" />
+                      </div>
+                      <input
+                        type="text"
+                        className="block w-full pl-10 pr-3 py-2 border border-slate-300 rounded-lg leading-5 bg-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                        placeholder="https://example.com/standard"
+                        value={urlInput}
+                        onChange={(e) => setUrlInput(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleAddUrl()}
+                      />
+                    </div>
+                    <Button variant="secondary" onClick={handleAddUrl} className="px-3">
+                      <Plus className="w-4 h-4" />
+                    </Button>
+                  </div>
+
+                  {referenceUrls.length > 0 && (
+                    <div className="space-y-2 max-h-32 overflow-y-auto mt-1">
+                      {referenceUrls.map((url, index) => (
+                        <div key={index} className="flex items-center justify-between p-2 bg-slate-50 rounded border border-slate-200 text-sm">
+                          <div className="flex items-center gap-2 overflow-hidden">
+                            <LinkIcon className="w-4 h-4 text-blue-500 flex-shrink-0" />
+                            <span className="truncate text-slate-700 font-medium">{url}</span>
+                          </div>
+                          <button onClick={() => removeReferenceUrl(index)} className="text-slate-400 hover:text-red-500 p-1">
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {appState === AppState.READY_TO_ANALYZE && (
+                  <div className="pt-4 border-t border-slate-100 mt-2">
+                    <p className="text-sm text-slate-600 mb-2">
+                      Ready to analyze against {referenceFiles.length} docs and {referenceUrls.length} links?
+                    </p>
+                    <Button
+                      onClick={handleAnalyze}
+                      className="w-full"
+                    >
+                      Analyze Findings
+                    </Button>
+                  </div>
+                )}
+
+                {appState === AppState.ANALYZING && (
+                  <div className="pt-4 border-t border-slate-100 mt-2">
+                    <div className="bg-blue-50 p-4 rounded-lg flex flex-col items-center justify-center space-y-3">
+                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                      <p className="text-sm text-blue-700 font-medium">Analyzing frames & standards...</p>
+                      <p className="text-xs text-blue-500">This may take a minute.</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+          </div>
+
+          <div className="lg:col-span-7">
+            {appState === AppState.COMPLETED && analysisResult ? (
+              <div className="bg-white rounded-xl shadow-lg border-2 border-orange-200 h-full flex flex-col animate-fadeIn">
+
+                <div className="p-6 border-b-2 border-orange-200 bg-gradient-to-r from-orange-50 to-blue-50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                  <div>
+                    <h2 className="text-xl font-bold text-blue-900 flex items-center gap-2">
+                      <BarChart3 className="w-6 h-6 text-orange-600" />
+                      Analysis Report
+                    </h2>
+                    <p className="text-sm text-slate-500 mt-1">
+                      Found {analysisResult.faults.length} issues requiring attention.
+                    </p>
+                  </div>
+                  <div className="flex gap-3">
+                    <Button variant="secondary" onClick={handleReset} className="text-sm">
+                      <RotateCcw className="w-4 h-4" />
+                      New Analysis
+                    </Button>
+                    <Button variant="primary" onClick={handleDownloadPDF} className="text-sm">
+                      <Download className="w-4 h-4" />
+                      Download PDF
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="p-6 bg-blue-50/50 border-b border-slate-100">
+                  <h3 className="text-xs font-bold text-blue-700 uppercase tracking-wide mb-2">Executive Summary</h3>
+                  <p className="text-sm text-slate-700 leading-relaxed">
+                    {analysisResult.summary}
+                  </p>
+                </div>
+
+                <div className="flex-grow overflow-auto p-0">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-slate-50 sticky top-0 z-10 shadow-sm">
+                      <tr>
+                        <th className="px-6 py-3 font-semibold text-slate-600 w-24">Time</th>
+                        <th className="px-6 py-3 font-semibold text-slate-600 w-40">Tag No.</th>
+                        <th className="px-6 py-3 font-semibold text-slate-600">Observation & Gap</th>
+                        <th className="px-6 py-3 font-semibold text-slate-600 w-32">Severity</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {analysisResult.faults.map((fault, index) => (
+                        <tr key={index} className="hover:bg-slate-50 group transition-colors">
+                          <td className="px-6 py-4 align-top">
+                            <button
+                              onClick={() => {
+                                if (videoRef.current) {
+                                  const parts = fault.timestamp.split(':');
+                                  const seconds = parseInt(parts[0]) * 60 + parseInt(parts[1]);
+                                  if (!isNaN(seconds)) {
+                                    videoRef.current.currentTime = seconds;
+                                    videoRef.current.play();
+                                  }
+                                }
+                              }}
+                              className="flex items-center gap-1 font-mono text-blue-600 bg-blue-50 px-2 py-1 rounded text-xs hover:bg-blue-100"
+                            >
+                              <Play className="w-3 h-3" />
+                              {fault.timestamp}
+                            </button>
+                          </td>
+                          <td className="px-6 py-4 align-top">
+                            <div className="font-mono text-xs bg-orange-50 text-orange-800 px-2 py-1 rounded border border-orange-200 inline-block">
+                              {fault.tagNumber}
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 align-top space-y-2">
+                            <div>
+                              <span className="font-semibold text-slate-800">{fault.component}</span>: {fault.description}
+                            </div>
+                            <div className="text-xs text-red-600 bg-red-50 p-2 rounded border border-red-100">
+                              <strong>Gap:</strong> {fault.standardGap}
+                            </div>
+                            <div className="text-xs text-slate-500">
+                              <strong className="text-slate-700">Action:</strong> {fault.recommendation}
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 align-top">
+                            <span className={`inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-bold shadow-md border-b-2
+                                ${fault.severity === 'Critical' ? 'bg-gradient-to-br from-red-500 to-red-600 text-white border-red-700' :
+                                fault.severity === 'High' ? 'bg-gradient-to-br from-orange-500 to-orange-600 text-white border-orange-700' :
+                                  fault.severity === 'Medium' ? 'bg-gradient-to-br from-yellow-400 to-yellow-500 text-yellow-900 border-yellow-600' :
+                                    'bg-gradient-to-br from-green-400 to-green-500 text-green-900 border-green-600'}`}>
+                              {fault.severity}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+
+                  {analysisResult.faults.length === 0 && (
+                    <div className="p-12 text-center text-slate-500">
+                      <CheckCircle2 className="w-12 h-12 text-green-500 mx-auto mb-4" />
+                      <p className="font-medium">No significant faults detected.</p>
+                      <p className="text-sm">The equipment appears to meet the provided standards.</p>
+                    </div>
+                  )}
+                </div>
+
+              </div>
+            ) : (
+              <div className="h-full rounded-xl border-2 border-dashed border-slate-200 flex flex-col items-center justify-center p-12 text-center text-slate-400 bg-slate-50/50">
+                <BarChart3 className="w-16 h-16 mb-4 opacity-20" />
+                <h3 className="text-lg font-medium text-slate-600">Analysis Results</h3>
+                <p className="max-w-sm mt-2">
+                  Upload a video and add reference documents (OISD, manuals) or URLs to start the analysis. The AI will compare findings against your inputs.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+};
+
+const rootElement = document.getElementById('root');
+if (!rootElement) {
+  throw new Error("Could not find root element to mount to");
+}
+
+const root = ReactDOM.createRoot(rootElement);
+root.render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);

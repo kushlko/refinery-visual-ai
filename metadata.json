@@ -1,0 +1,5 @@
+{
+  "name": "RefineryEye AI",
+  "description": "AI-powered visual inspection tool for refinery instrumentation systems. Detects faults like corrosion, loose links, and missing components in video footage using Gemini 2.5.",
+  "requestFramePermissions": []
+}
