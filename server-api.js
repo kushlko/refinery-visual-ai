@@ -198,7 +198,7 @@ app.post('/api/analyze', requireAuth, async (req, res) => {
         // Call Gemini API
         const genAI = new GoogleGenerativeAI(apiKey);
         const model = genAI.getGenerativeModel({
-            model: "gemini-1.5-pro-latest",
+            model: "gemini-3-pro-preview",
             generationConfig: {
                 responseMimeType: "application/json",
                 responseSchema: {

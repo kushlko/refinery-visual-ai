@@ -1,7 +1,9 @@
 [
     {
         "origin": [
-            "https://refinery-eye-718290922622.us-central1.run.app",
+            "https://refinery-eye-5e9fy4gzj-kks-projects-b8090fae.vercel.app",
+            "https://refinery-eye-ai.vercel.app",
+            "https://refinery-eye-kk3ctctegya-uc.a.run.app",
             "http://localhost:3000"
         ],
         "method": [

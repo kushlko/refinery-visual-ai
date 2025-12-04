@@ -1,17 +1,16 @@
-export interface FaultRecord {
+export interface InspectionRecord {
+  serial_no: number;
   timestamp: string;
-  component: string;
-  tagNumber: string;
-  faultType: string;
-  description: string;
-  severity: 'Low' | 'Medium' | 'High' | 'Critical';
-  standardGap: string;
-  recommendation: string;
+  tag_number: string;
+  equipment_type: string;
+  fault_type: string;
+  severity: 'Low' | 'Medium' | 'High';
+  corrective_action: string;
+  remarks: string;
 }
 
 export interface AnalysisResult {
-  summary: string;
-  faults: FaultRecord[];
+  inspection_report: InspectionRecord[];
 }
 
 export enum AppState {

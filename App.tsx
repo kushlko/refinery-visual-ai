@@ -51,39 +51,34 @@ const generatePDFReport = (data: AnalysisResult, referenceFilenames: string[], r
 
   doc.setFontSize(14);
   doc.setTextColor(0);
-  doc.text("Executive Summary", 14, yPos);
+  doc.text("Inspection Report", 14, yPos);
+  yPos += 10;
 
-  doc.setFontSize(10);
-  doc.setTextColor(60);
-  const splitSummary = doc.splitTextToSize(data.summary, 180);
-  doc.text(splitSummary, 14, yPos + 7);
-
-  const tableData = data.faults.map(fault => [
-    fault.timestamp,
-    fault.tagNumber,
-    fault.component,
-    fault.faultType,
-    fault.severity,
-    fault.standardGap,
-    fault.recommendation
+  const tableData = data.inspection_report.map(record => [
+    record.serial_no,
+    record.timestamp,
+    record.tag_number,
+    record.equipment_type,
+    record.fault_type,
+    record.severity,
+    record.corrective_action,
+    record.remarks
   ]);
 
-  const summaryHeight = splitSummary.length * 4;
-  const tableStartY = yPos + 7 + summaryHeight + 10;
-
   autoTable(doc, {
-    startY: tableStartY > 250 ? 20 : tableStartY,
-    head: [['Time', 'Tag No.', 'Component', 'Fault', 'Severity', 'Gap / Violation', 'Action']],
+    startY: yPos,
+    head: [['#', 'Time', 'Tag No.', 'Equipment', 'Fault', 'Severity', 'Corrective Action', 'Remarks']],
     body: tableData,
     headStyles: { fillColor: [41, 128, 185], textColor: 255 },
     columnStyles: {
-      0: { cellWidth: 12 },
-      1: { cellWidth: 22 },
+      0: { cellWidth: 8 },
+      1: { cellWidth: 15 },
       2: { cellWidth: 20 },
-      3: { cellWidth: 18 },
-      4: { cellWidth: 15 },
-      5: { cellWidth: 45 },
-      6: { cellWidth: 40 },
+      3: { cellWidth: 25 },
+      4: { cellWidth: 20 },
+      5: { cellWidth: 15 },
+      6: { cellWidth: 35 },
+      7: { cellWidth: 40 },
     },
     styles: { fontSize: 8, overflow: 'linebreak' },
     margin: { top: 10 }
@@ -430,9 +425,9 @@ const App: React.FC = () => {
                     </div>
 
                     <div className={`flex items-center justify-between p-3 rounded-lg border ${appState === AppState.READY_TO_ANALYZE ? 'bg-green-50 border-green-100' :
-                        appState === AppState.UPLOADING ? 'bg-blue-50 border-blue-100' :
-                          appState === AppState.ERROR ? 'bg-red-50 border-red-100' :
-                            'bg-slate-50 border-slate-100'
+                      appState === AppState.UPLOADING ? 'bg-blue-50 border-blue-100' :
+                        appState === AppState.ERROR ? 'bg-red-50 border-red-100' :
+                          'bg-slate-50 border-slate-100'
                       }`}>
                       <div className="flex items-center gap-2">
                         {appState === AppState.UPLOADING ? (
@@ -446,9 +441,9 @@ const App: React.FC = () => {
                         )}
 
                         <span className={`text-sm font-medium ${appState === AppState.READY_TO_ANALYZE ? 'text-green-800' :
-                            appState === AppState.UPLOADING ? 'text-blue-800' :
-                              appState === AppState.ERROR ? 'text-red-800' :
-                                'text-slate-700'
+                          appState === AppState.UPLOADING ? 'text-blue-800' :
+                            appState === AppState.ERROR ? 'text-red-800' :
+                              'text-slate-700'
                           }`}>
                           {appState === AppState.READY_TO_ANALYZE ? 'Video uploaded successfully' :
                             appState === AppState.UPLOADING ? 'Uploading video...' :
@@ -458,9 +453,9 @@ const App: React.FC = () => {
                       </div>
 
                       <span className={`text-xs px-2 py-1 rounded ${appState === AppState.READY_TO_ANALYZE ? 'text-green-700 bg-green-200' :
-                          appState === AppState.UPLOADING ? 'text-blue-700 bg-blue-200' :
-                            appState === AppState.ERROR ? 'text-red-700 bg-red-200' :
-                              'text-slate-600 bg-slate-200'
+                        appState === AppState.UPLOADING ? 'text-blue-700 bg-blue-200' :
+                          appState === AppState.ERROR ? 'text-red-700 bg-red-200' :
+                            'text-slate-600 bg-slate-200'
                         }`}>
                         {appState === AppState.READY_TO_ANALYZE ? 'Ready' :
                           appState === AppState.UPLOADING ? 'Processing' :
@@ -601,7 +596,7 @@ const App: React.FC = () => {
                       Analysis Report
                     </h2>
                     <p className="text-sm text-slate-500 mt-1">
-                      Found {analysisResult.faults.length} issues requiring attention.
+                      Found {analysisResult.inspection_report.length} issues requiring attention.
                     </p>
                   </div>
                   <div className="flex gap-3">
@@ -616,33 +611,32 @@ const App: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Executive Summary */}
-                <div className="p-6 bg-blue-50/50 border-b border-slate-100">
-                  <h3 className="text-xs font-bold text-blue-700 uppercase tracking-wide mb-2">Executive Summary</h3>
-                  <p className="text-sm text-slate-700 leading-relaxed">
-                    {analysisResult.summary}
-                  </p>
-                </div>
-
-                {/* Faults List */}
+                {/* Inspection Report Table */}
                 <div className="flex-grow overflow-auto p-0">
                   <table className="w-full text-left text-sm">
                     <thead className="bg-slate-50 sticky top-0 z-10 shadow-sm">
                       <tr>
-                        <th className="px-6 py-3 font-semibold text-slate-600 w-24">Time</th>
-                        <th className="px-6 py-3 font-semibold text-slate-600">Observation & Gap</th>
-                        <th className="px-6 py-3 font-semibold text-slate-600 w-32">Severity</th>
+                        <th className="px-4 py-3 font-semibold text-slate-600 w-16">#</th>
+                        <th className="px-4 py-3 font-semibold text-slate-600 w-20">Time</th>
+                        <th className="px-4 py-3 font-semibold text-slate-600">Tag No.</th>
+                        <th className="px-4 py-3 font-semibold text-slate-600">Equipment</th>
+                        <th className="px-4 py-3 font-semibold text-slate-600">Fault</th>
+                        <th className="px-4 py-3 font-semibold text-slate-600 w-24">Severity</th>
+                        <th className="px-4 py-3 font-semibold text-slate-600">Corrective Action</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {analysisResult.faults.map((fault, index) => (
+                      {analysisResult.inspection_report.map((record, index) => (
                         <tr key={index} className="hover:bg-slate-50 group transition-colors">
-                          <td className="px-6 py-4 align-top">
+                          <td className="px-4 py-4 align-top text-center">
+                            <span className="font-semibold text-slate-700">{record.serial_no}</span>
+                          </td>
+                          <td className="px-4 py-4 align-top">
                             <button
                               onClick={() => {
                                 if (videoRef.current) {
                                   // Parse MM:SS to seconds
-                                  const parts = fault.timestamp.split(':');
+                                  const parts = record.timestamp.split(':');
                                   const seconds = parseInt(parts[0]) * 60 + parseInt(parts[1]);
                                   if (!isNaN(seconds)) {
                                     videoRef.current.currentTime = seconds;
@@ -653,35 +647,38 @@ const App: React.FC = () => {
                               className="flex items-center gap-1 font-mono text-blue-600 bg-blue-50 px-2 py-1 rounded text-xs hover:bg-blue-100"
                             >
                               <Play className="w-3 h-3" />
-                              {fault.timestamp}
+                              {record.timestamp}
                             </button>
                           </td>
-                          <td className="px-6 py-4 align-top space-y-2">
-                            <div>
-                              <span className="font-semibold text-slate-800">{fault.component}</span>: {fault.description}
-                            </div>
-                            <div className="text-xs text-red-600 bg-red-50 p-2 rounded border border-red-100">
-                              <strong>Gap:</strong> {fault.standardGap}
-                            </div>
-                            <div className="text-xs text-slate-500">
-                              <strong className="text-slate-700">Action:</strong> {fault.recommendation}
+                          <td className="px-4 py-4 align-top">
+                            <span className="text-sm font-medium text-slate-700">{record.tag_number}</span>
+                          </td>
+                          <td className="px-4 py-4 align-top">
+                            <span className="text-sm text-slate-700">{record.equipment_type}</span>
+                          </td>
+                          <td className="px-4 py-4 align-top">
+                            <div className="space-y-1">
+                              <div className="font-semibold text-slate-800">{record.fault_type}</div>
+                              <div className="text-xs text-slate-500">{record.remarks}</div>
                             </div>
                           </td>
-                          <td className="px-6 py-4 align-top">
+                          <td className="px-4 py-4 align-top">
                             <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
-                                        ${fault.severity === 'Critical' ? 'bg-red-100 text-red-800' :
-                                fault.severity === 'High' ? 'bg-orange-100 text-orange-800' :
-                                  fault.severity === 'Medium' ? 'bg-yellow-100 text-yellow-800' :
-                                    'bg-green-100 text-green-800'}`}>
-                              {fault.severity}
+                                        ${record.severity === 'High' ? 'bg-red-100 text-red-800' :
+                                record.severity === 'Medium' ? 'bg-yellow-100 text-yellow-800' :
+                                  'bg-green-100 text-green-800'}`}>
+                              {record.severity}
                             </span>
+                          </td>
+                          <td className="px-4 py-4 align-top">
+                            <span className="text-xs text-slate-600">{record.corrective_action}</span>
                           </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
 
-                  {analysisResult.faults.length === 0 && (
+                  {analysisResult.inspection_report.length === 0 && (
                     <div className="p-12 text-center text-slate-500">
                       <CheckCircle2 className="w-12 h-12 text-green-500 mx-auto mb-4" />
                       <p className="font-medium">No significant faults detected.</p>

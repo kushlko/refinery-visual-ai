@@ -31,42 +31,27 @@ export const api = {
 
     // File uploads
     async uploadVideo(file: File) {
-        console.log('Starting direct upload:', { name: file.name, size: file.size, type: file.type });
+        console.log('Starting local upload:', { name: file.name, size: file.size, type: file.type });
 
-        // 1. Get Signed URL
-        const params = new URLSearchParams({
-            filename: file.name,
-            contentType: file.type
+        const formData = new FormData();
+        formData.append('video', file);
+
+        const res = await fetch(`${API_BASE}/api/upload-video`, {
+            method: 'POST',
+            credentials: 'include',
+            body: formData
         });
 
-        const urlRes = await fetch(`${API_BASE}/api/get-upload-url?${params}`, {
-            credentials: 'include'
-        });
-
-        if (!urlRes.ok) {
-            throw new Error('Failed to get upload URL');
+        if (!res.ok) {
+            const errorData = await res.json().catch(() => ({}));
+            console.error('Upload failed:', res.status, res.statusText, errorData);
+            throw new Error(errorData.error || 'Failed to upload video file');
         }
 
-        const { uploadUrl, publicUrl } = await urlRes.json();
+        const data = await res.json();
+        console.log('Upload successful:', data);
 
-        // 2. Upload to Signed URL
-        const uploadRes = await fetch(uploadUrl, {
-            method: 'PUT',
-            body: file,
-            headers: {
-                'Content-Type': file.type
-            }
-        });
-
-        if (!uploadRes.ok) {
-            console.error('Direct upload failed:', uploadRes.status, uploadRes.statusText);
-            throw new Error('Failed to upload video file to storage');
-        }
-
-        console.log('Direct upload successful');
-
-        // Return the public URL to be used by the app
-        return { url: publicUrl };
+        return { url: data.url };
     },
 
     async uploadReferences(files: File[]) {

@@ -25,3 +25,11 @@ build_log*.txt
 *.njsproj
 *.sln
 *.sw?
+
+.vercel
+.env
+.env*.local
+
+# Local data and uploads
+data/
+uploads/

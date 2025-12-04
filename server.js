@@ -1,14 +1,15 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import session from 'express-session';
 import bcrypt from 'bcryptjs';
 import multer from 'multer';
-import { Storage } from '@google-cloud/storage';
-import { Firestore } from '@google-cloud/firestore';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleAIFileManager } from '@google/generative-ai/server';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import { v4 as uuidv4 } from 'uuid';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,42 +17,87 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const port = process.env.PORT || 8080;
 
-// Initialize Google Cloud services
-// Initialize Google Cloud services
-const storage = new Storage();
-const firestore = new Firestore();
-const bucketName = process.env.BUCKET_NAME || 'refinery-eye-uploads';
-const bucket = storage.bucket(bucketName);
+// Initialize Gemini (only for AI analysis)
+const apiKey = process.env.GEMINI_API_KEY;
+if (!apiKey) {
+  console.warn('WARNING: GEMINI_API_KEY not set. Analysis will fail.');
+}
+const fileManager = apiKey ? new GoogleAIFileManager(apiKey) : null;
+const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
 
-console.log('Cloud Storage initialized:', {
-  bucketName,
-  nodeEnv: process.env.NODE_ENV
+console.log('Server initialized for fully local execution');
+console.log('Gemini API:', apiKey ? 'Configured' : 'NOT configured');
+
+// Ensure directories exist
+const uploadsDir = path.join(__dirname, 'uploads');
+const dataDir = path.join(__dirname, 'data');
+const reportsFile = path.join(dataDir, 'reports.json');
+
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir);
+}
+if (!fs.existsSync(dataDir)) {
+  fs.mkdirSync(dataDir);
+}
+if (!fs.existsSync(reportsFile)) {
+  fs.writeFileSync(reportsFile, JSON.stringify([]));
+}
+
+// Helper functions for local JSON database
+const readReports = () => {
+  try {
+    const data = fs.readFileSync(reportsFile, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    console.error('Error reading reports:', error);
+    return [];
+  }
+};
+
+const writeReports = (reports) => {
+  try {
+    fs.writeFileSync(reportsFile, JSON.stringify(reports, null, 2));
+  } catch (error) {
+    console.error('Error writing reports:', error);
+  }
+};
+
+// Multer for file uploads (Disk Storage)
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadsDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, uniqueSuffix + '-' + file.originalname);
+  }
 });
 
-// Multer for file uploads (memory storage)
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({ storage: storage });
 
 // Middleware
 app.use(cors({
-  origin: true, // Allow same-origin requests in production
+  origin: true,
   credentials: true
 }));
-app.use(express.json({ limit: '200mb' })); // Increase limit for large payloads
+app.use(express.json({ limit: '200mb' }));
 app.use(express.urlencoded({ limit: '200mb', extended: true }));
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'refinery-eye-secret-key-change-in-production',
+  secret: process.env.SESSION_SECRET || 'refinery-eye-secret-local',
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: false, // Set to false to work with Cloud Run's HTTPS termination
+    secure: false,
     httpOnly: true,
-    sameSite: 'lax',
-    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    maxAge: 24 * 60 * 60 * 1000
   }
 }));
 
 // Serve static files from dist directory
 app.use(express.static(path.join(__dirname, 'dist')));
+
+// Serve uploaded content locally
+app.use('/api/content', express.static(uploadsDir));
 
 // Authentication credentials (hashed password)
 const VALID_USERNAME = 'JRinst';
@@ -64,11 +110,6 @@ const requireAuth = (req, res, next) => {
   } else {
     res.status(401).json({ error: 'Unauthorized' });
   }
-};
-
-// Helper function to convert file to base64
-const fileToBase64 = (buffer) => {
-  return buffer.toString('base64');
 };
 
 // API Routes
@@ -97,95 +138,43 @@ app.get('/api/auth/status', (req, res) => {
   res.json({ authenticated: !!req.session?.authenticated });
 });
 
-// Upload video to Cloud Storage
+// Upload video (Local Storage)
 app.post('/api/upload-video', requireAuth, upload.single('video'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No video file provided' });
     }
 
-    console.log('Upload video request:', {
-      filename: req.file.originalname,
-      size: req.file.size,
-      mimetype: req.file.mimetype,
-      bucketName
-    });
+    console.log('Video uploaded locally:', req.file.path);
 
-    const filename = `videos/${Date.now()}-${req.file.originalname}`;
-    const file = bucket.file(filename);
-
-    console.log('Attempting to save file to bucket:', filename);
-
-    await file.save(req.file.buffer, {
-      metadata: {
-        contentType: req.file.mimetype
-      },
-      public: true // Make the file publicly accessible
-    });
-
-    console.log('File saved successfully, getting public URL');
-
-    // Use public URL instead of signed URL
-    const url = `https://storage.googleapis.com/${bucketName}/${filename}`;
-
-    console.log('Public URL generated successfully:', url);
+    // Return local URL
+    const url = `/api/content/${req.file.filename}`;
 
     res.json({
       success: true,
       url,
       filename: req.file.originalname,
-      storagePath: filename
+      storagePath: req.file.filename
     });
   } catch (error) {
     console.error('Upload video error:', error);
-    console.error('Error details:', {
-      message: error.message,
-      code: error.code,
-      stack: error.stack
-    });
-
-    let errorMessage = 'Failed to upload video';
-    if (error.code === 403) {
-      errorMessage = 'Permission denied: Cloud Run service account cannot write to storage bucket';
-    } else if (error.code === 404) {
-      errorMessage = 'Storage bucket not found';
-    } else if (error.message) {
-      errorMessage = `Upload failed: ${error.message}`;
-    }
-
-    res.status(500).json({ error: errorMessage });
+    res.status(500).json({ error: 'Failed to upload video' });
   }
 });
 
-// Upload reference PDFs to Cloud Storage
+// Upload reference PDFs (Local Storage)
 app.post('/api/upload-references', requireAuth, upload.array('references', 10), async (req, res) => {
   try {
     if (!req.files || req.files.length === 0) {
       return res.json({ success: true, files: [] });
     }
 
-    const uploadPromises = req.files.map(async (file) => {
-      const filename = `references/${Date.now()}-${file.originalname}`;
-      const storageFile = bucket.file(filename);
+    const files = req.files.map(file => ({
+      url: `/api/content/${file.filename}`,
+      filename: file.originalname,
+      storagePath: file.filename
+    }));
 
-      await storageFile.save(file.buffer, {
-        metadata: {
-          contentType: file.mimetype
-        },
-        public: true // Make the file publicly accessible
-      });
-
-      // Use public URL instead of signed URL
-      const url = `https://storage.googleapis.com/${bucketName}/${filename}`;
-
-      return {
-        url,
-        filename: file.originalname,
-        storagePath: filename
-      };
-    });
-
-    const files = await Promise.all(uploadPromises);
     res.json({ success: true, files });
   } catch (error) {
     console.error('Upload references error:', error);
@@ -193,202 +182,212 @@ app.post('/api/upload-references', requireAuth, upload.array('references', 10), 
   }
 });
 
-// Get Signed URL for direct upload
-app.get('/api/get-upload-url', requireAuth, async (req, res) => {
-  try {
-    const { filename, contentType } = req.query;
-
-    if (!filename || !contentType) {
-      return res.status(400).json({ error: 'Filename and content type required' });
-    }
-
-    const storagePath = `videos/${Date.now()}-${filename}`;
-    const file = bucket.file(storagePath);
-
-    // Generate Signed URL for PUT request
-    const [uploadUrl] = await file.getSignedUrl({
-      version: 'v4',
-      action: 'write',
-      expires: Date.now() + 15 * 60 * 1000, // 15 minutes
-      contentType: contentType
-    });
-
-    const publicUrl = `https://storage.googleapis.com/${bucketName}/${storagePath}`;
-
-    res.json({
-      success: true,
-      uploadUrl,
-      publicUrl,
-      storagePath
-    });
-  } catch (error) {
-    console.error('Get upload URL error:', error);
-    res.status(500).json({ error: 'Failed to generate upload URL' });
-  }
-});
-
-// Analyze video with Gemini
+// Analyze video with Gemini (using File API)
 app.post('/api/analyze', requireAuth, async (req, res) => {
   try {
-    const { videoUrl, referenceUrls = [], referenceUrlsList = [] } = req.body;
+    console.log('=== Analysis Request Started ===');
+    const { videoUrl, referenceUrls = [] } = req.body;
+    console.log('Video URL:', videoUrl);
+    console.log('Reference URLs:', referenceUrls);
 
     if (!videoUrl) {
+      console.error('ERROR: No video URL provided');
       return res.status(400).json({ error: 'Video URL required' });
     }
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    console.log('DEBUG: API Key check');
-    console.log('DEBUG: API Key exists:', !!apiKey);
-    console.log('DEBUG: API Key length:', apiKey ? apiKey.length : 0);
-
-    if (!apiKey) {
-      console.error('DEBUG: API Key is missing in server.js');
-      return res.status(500).json({ error: 'SERVER ERROR: Gemini API key is missing from server environment variables.' });
+    if (!apiKey || !fileManager || !genAI) {
+      console.error('ERROR: Gemini API not configured');
+      console.error('API Key exists:', !!apiKey);
+      console.error('FileManager exists:', !!fileManager);
+      console.error('GenAI exists:', !!genAI);
+      return res.status(500).json({ error: 'Gemini API not configured. Please set GEMINI_API_KEY in .env file.' });
     }
 
-    // Extract storage path from URL or use as is
-    let videoStoragePath = videoUrl;
-    if (videoUrl.includes('storage.googleapis.com')) {
-      try {
-        const urlObj = new URL(videoUrl);
-        // Pathname is /bucketName/path/to/file
-        const pathParts = urlObj.pathname.split('/').filter(p => p);
-        // Remove bucket name (first element)
-        if (pathParts.length > 1) {
-          videoStoragePath = pathParts.slice(1).join('/');
-        }
-      } catch (e) {
-        console.warn('Failed to parse video URL, using as is:', videoUrl);
+    // Extract filename from URL
+    const videoFilename = videoUrl.split('/').pop();
+    const videoPath = path.join(uploadsDir, videoFilename);
+    console.log('Video filename:', videoFilename);
+    console.log('Video path:', videoPath);
+
+    if (!fs.existsSync(videoPath)) {
+      console.error('ERROR: Video file not found at:', videoPath);
+      return res.status(404).json({ error: 'Video file not found on server' });
+    }
+
+    const stats = fs.statSync(videoPath);
+    console.log('Video file size:', stats.size, 'bytes');
+
+    console.log('Uploading video to Gemini...');
+
+    // Upload video to Gemini
+    const uploadResponse = await fileManager.uploadFile(videoPath, {
+      mimeType: "video/mp4",
+      displayName: videoFilename,
+    });
+
+    console.log(`✓ Uploaded file ${uploadResponse.file.displayName} as: ${uploadResponse.file.uri}`);
+
+    // Wait for processing to complete
+    let file = await fileManager.getFile(uploadResponse.file.name);
+    let attempts = 0;
+    const maxAttempts = 60; // 2 minutes max
+
+    while (file.state === "PROCESSING") {
+      attempts++;
+      console.log(`Processing video... (attempt ${attempts}/${maxAttempts})`);
+
+      if (attempts >= maxAttempts) {
+        throw new Error("Video processing timeout - took longer than 2 minutes");
       }
+
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      file = await fileManager.getFile(uploadResponse.file.name);
     }
 
-    console.log('Using video storage path:', videoStoragePath);
+    if (file.state === "FAILED") {
+      console.error('ERROR: Video processing failed');
+      throw new Error("Video processing failed.");
+    }
 
-    // Download files from Cloud Storage
-    const videoFile = bucket.file(videoStoragePath);
-    const [videoBuffer] = await videoFile.download();
-    const videoBase64 = fileToBase64(videoBuffer);
-    const videoMimeType = 'video/mp4'; // Adjust based on actual file type
+    console.log("✓ Video processing complete. State:", file.state);
 
-    // Download reference PDFs
+    // Prepare reference PDFs
+    console.log('Processing reference PDFs...');
     const pdfParts = await Promise.all(
-      referenceUrls.map(async (url) => {
-        // Extract filename/path for references too
-        let refStoragePath = url.split('/').pop().split('?')[0]; // Fallback
-        if (url.includes('storage.googleapis.com')) {
-          try {
-            const urlObj = new URL(url);
-            const pathParts = urlObj.pathname.split('/').filter(p => p);
-            if (pathParts.length > 1) {
-              refStoragePath = pathParts.slice(1).join('/');
-            }
-          } catch (e) { }
-        }
+      referenceUrls.map(async (url, index) => {
+        if (url.startsWith('/api/content/')) {
+          const filename = url.split('/').pop();
+          const filePath = path.join(uploadsDir, filename);
+          console.log(`  PDF ${index + 1}: ${filename}`);
 
-        // If it's just a filename, assume references/ folder if not found? 
-        // Current upload-references puts them in 'references/' folder.
-        // But the URL logic above should handle it if it's a full URL.
-        // If it's just a filename, we might need to prepend 'references/' if it's missing.
-        // But let's assume the URL logic works.
-
-        const file = bucket.file(refStoragePath);
-        const [buffer] = await file.download();
-        return {
-          inlineData: {
-            mimeType: 'application/pdf',
-            data: fileToBase64(buffer)
+          if (fs.existsSync(filePath)) {
+            const buffer = fs.readFileSync(filePath);
+            console.log(`  ✓ Loaded PDF ${index + 1}, size: ${buffer.length} bytes`);
+            return {
+              inlineData: {
+                mimeType: 'application/pdf',
+                data: buffer.toString('base64')
+              }
+            };
+          } else {
+            console.warn(`  ✗ PDF not found: ${filePath}`);
           }
-        };
+        }
+        return null;
       })
     );
 
+    const validPdfParts = pdfParts.filter(p => p !== null);
+    console.log(`✓ Loaded ${validPdfParts.length} reference PDFs`);
+
     // Call Gemini API
-    const genAI = new GoogleGenerativeAI(apiKey);
+    console.log('Calling Gemini API for analysis...');
     const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-pro-latest",
+      model: "gemini-2.0-flash-exp",
       generationConfig: {
         responseMimeType: "application/json",
         responseSchema: {
           type: "OBJECT",
           properties: {
-            summary: {
-              type: "STRING",
-              description: "A brief executive summary of the inspection findings."
-            },
+            summary: { type: "STRING" },
             faults: {
               type: "ARRAY",
               items: {
                 type: "OBJECT",
                 properties: {
-                  timestamp: { type: "STRING", description: "Time format MM:SS" },
-                  component: { type: "STRING", description: "Name of the component" },
-                  tagNumber: { type: "STRING", description: "Equipment tag number if visible, or 'Near [location]'" },
-                  faultType: { type: "STRING", description: "Short category of fault" },
-                  description: { type: "STRING", description: "Detailed description" },
+                  timestamp: { type: "STRING" },
+                  component: { type: "STRING" },
+                  tagNumber: { type: "STRING" },
+                  faultType: { type: "STRING" },
+                  description: { type: "STRING" },
                   severity: { type: "STRING", enum: ["Low", "Medium", "High", "Critical"] },
-                  standardGap: { type: "STRING", description: "Citation of violated standard" },
-                  recommendation: { type: "STRING", description: "Recommended action" }
+                  standardGap: { type: "STRING" },
+                  recommendation: { type: "STRING" }
                 },
                 required: ["timestamp", "component", "tagNumber", "faultType", "description", "severity", "standardGap", "recommendation"]
               }
             }
           },
           required: ["summary", "faults"]
-        },
-        temperature: 0.2,
+        }
       }
     });
 
     const prompt = `
       You are a Senior Reliability Engineer at a refinery.
-      
       Analyze the video to identify visual faults and equipment tag numbers.
       Look for tag numbers in formats like: 20-FV-2300, JBS-203, TE-2312, etc.
       If no tag visible, use "Near [location text]" based on nearby signage.
-      
       Compare against provided reference documents and identify standard violations.
     `;
 
     const result = await model.generateContent([
       {
-        inlineData: {
-          mimeType: videoMimeType,
-          data: videoBase64
+        fileData: {
+          mimeType: uploadResponse.file.mimeType,
+          fileUri: uploadResponse.file.uri
         }
       },
-      ...pdfParts,
+      ...validPdfParts,
       { text: prompt }
     ]);
 
-    const text = result.response.text();
-    const analysisResult = JSON.parse(text);
+    console.log('✓ Gemini API call successful');
 
+    const text = result.response.text();
+    console.log('Response text length:', text.length);
+
+    const analysisResult = JSON.parse(text);
+    console.log('✓ Parsed analysis result. Faults found:', analysisResult.faults?.length || 0);
+
+    // Clean up Gemini file
+    try {
+      await fileManager.deleteFile(uploadResponse.file.name);
+      console.log('✓ Cleaned up Gemini file');
+    } catch (e) {
+      console.warn('Could not delete Gemini file:', e.message);
+    }
+
+    console.log('=== Analysis Complete ===');
     res.json({ success: true, result: analysisResult });
+
   } catch (error) {
-    console.error('Analysis error:', error);
-    res.status(500).json({ error: 'Analysis failed: ' + error.message });
+    console.error('=== Analysis Error ===');
+    console.error('Error name:', error.name);
+    console.error('Error message:', error.message);
+    console.error('Error stack:', error.stack);
+
+    // Send detailed error to client
+    res.status(500).json({
+      error: 'Analysis failed: ' + error.message,
+      details: error.stack
+    });
   }
 });
 
-// Save report to Firestore
+// Save report to local JSON file
 app.post('/api/save-report', requireAuth, async (req, res) => {
   try {
     const { videoUrl, videoFileName, referenceUrls, referenceFileNames, result } = req.body;
 
-    const reportData = {
+    const reports = readReports();
+
+    const newReport = {
+      id: uuidv4(),
       videoUrl,
       videoFileName,
       referenceUrls: referenceUrls || [],
       referenceFileNames: referenceFileNames || [],
       summary: result.summary,
       faults: result.faults,
-      createdAt: Firestore.Timestamp.now(),
+      createdAt: new Date().toISOString(),
       createdBy: req.session.username
     };
 
-    const docRef = await firestore.collection('reports').add(reportData);
+    reports.push(newReport);
+    writeReports(reports);
 
-    res.json({ success: true, reportId: docRef.id });
+    res.json({ success: true, reportId: newReport.id });
   } catch (error) {
     console.error('Save report error:', error);
     res.status(500).json({ error: 'Failed to save report' });
@@ -398,21 +397,14 @@ app.post('/api/save-report', requireAuth, async (req, res) => {
 // Get all reports
 app.get('/api/reports', requireAuth, async (req, res) => {
   try {
-    const snapshot = await firestore.collection('reports')
-      .orderBy('createdAt', 'desc')
-      .limit(50)
-      .get();
+    const reports = readReports();
 
-    const reports = [];
-    snapshot.forEach(doc => {
-      reports.push({
-        id: doc.id,
-        ...doc.data(),
-        createdAt: doc.data().createdAt.toDate().toISOString()
-      });
-    });
+    // Sort by createdAt descending and limit to 50
+    const sortedReports = reports
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      .slice(0, 50);
 
-    res.json({ success: true, reports });
+    res.json({ success: true, reports: sortedReports });
   } catch (error) {
     console.error('Get reports error:', error);
     res.status(500).json({ error: 'Failed to fetch reports' });
@@ -422,20 +414,14 @@ app.get('/api/reports', requireAuth, async (req, res) => {
 // Get specific report
 app.get('/api/reports/:id', requireAuth, async (req, res) => {
   try {
-    const doc = await firestore.collection('reports').doc(req.params.id).get();
+    const reports = readReports();
+    const report = reports.find(r => r.id === req.params.id);
 
-    if (!doc.exists) {
+    if (!report) {
       return res.status(404).json({ error: 'Report not found' });
     }
 
-    res.json({
-      success: true,
-      report: {
-        id: doc.id,
-        ...doc.data(),
-        createdAt: doc.data().createdAt.toDate().toISOString()
-      }
-    });
+    res.json({ success: true, report });
   } catch (error) {
     console.error('Get report error:', error);
     res.status(500).json({ error: 'Failed to fetch report' });
@@ -445,7 +431,14 @@ app.get('/api/reports/:id', requireAuth, async (req, res) => {
 // Delete report
 app.delete('/api/reports/:id', requireAuth, async (req, res) => {
   try {
-    await firestore.collection('reports').doc(req.params.id).delete();
+    const reports = readReports();
+    const filteredReports = reports.filter(r => r.id !== req.params.id);
+
+    if (reports.length === filteredReports.length) {
+      return res.status(404).json({ error: 'Report not found' });
+    }
+
+    writeReports(filteredReports);
     res.json({ success: true, message: 'Report deleted' });
   } catch (error) {
     console.error('Delete report error:', error);
@@ -460,4 +453,6 @@ app.get('*', (req, res) => {
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
+  console.log(`Upload directory: ${uploadsDir}`);
+  console.log(`Reports database: ${reportsFile}`);
 });
